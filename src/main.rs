@@ -14,6 +14,7 @@ use crossterm::{
 };
 
 const SUBSERVER_NAMES: [&str; 2] = ["floormedia_frontend", "floormedia_backend"];
+const SUBSERVER_BACKEND_I: usize = 1;
 const SUBSERVER_DIR: &str = "./sub/";
 
 fn main() {
@@ -24,17 +25,20 @@ fn main() {
     } else {
         subservers_initialize();
     }
-    subservers_run(args.distinguish_child_stdouts);
+    subservers_run(args);
 }
 
+#[derive(Debug, Clone, Copy)]
 struct ParsedArgs {
     distinguish_child_stdouts: bool,
+    server_alternate_port: Option<u16>,
 }
 impl<T: Iterator<Item = String>> From<T> for ParsedArgs {
     fn from(value: T) -> Self {
         let mut value = value.skip(1);
         let mut out = Self {
             distinguish_child_stdouts: true,
+            server_alternate_port: None,
         };
         loop {
             let Some(arg) = value.next() else {
@@ -43,6 +47,19 @@ impl<T: Iterator<Item = String>> From<T> for ParsedArgs {
             match arg.as_str() {
                 "inherit_stdouts" | "-m" => {
                     out.distinguish_child_stdouts = false;
+                }
+                "backend_port" | "-bp" => {
+                    let Some(port) = value.next().and_then(|v| v.parse::<u16>().ok()) else {
+                        execute!(
+                            stdout(),
+                            PrintStyledContent(" ".on_red()),
+                            Print("  "),
+                            PrintStyledContent(format!("invalid server port, ignoring.").red()),
+                        )
+                        .unwrap();
+                        continue;
+                    };
+                    out.server_alternate_port = Some(port);
                 }
                 _ => {
                     execute!(
@@ -124,11 +141,11 @@ fn subservers_sync() {
         node_build(updated);
     }
 }
-fn subservers_run(distinguish_child_stdouts: bool) {
+fn subservers_run(args: ParsedArgs) {
     Style::Header.println(format!("launching servers"));
     Style::SubHeader.println(format!("press `ctrl+C` to exit"));
 
-    let child_processes = SUBSERVER_NAMES.map(|name| node_run(name, distinguish_child_stdouts));
+    let child_processes = SUBSERVER_NAMES.map(|name| node_run(name, args));
 
     for mut child in child_processes {
         child.wait().unwrap();
@@ -157,11 +174,20 @@ fn node_build(name: &str) {
         panic!();
     }
 }
-fn node_run(name: &'static str, distinguish_child_stdouts: bool) -> Child {
+fn node_run(name: &'static str, args: ParsedArgs) -> Child {
     let mut child = Command::new("npm")
         .arg("start")
+        .args(if let Some(port) = args.server_alternate_port {
+            if name == SUBSERVER_NAMES[SUBSERVER_BACKEND_I] {
+                vec!["--".to_string(), format!("-p={}", port)]
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        })
         .current_dir(get_subserver_cwd(name))
-        .stdout(if distinguish_child_stdouts {
+        .stdout(if args.distinguish_child_stdouts {
             Stdio::piped()
         } else {
             Stdio::inherit()
